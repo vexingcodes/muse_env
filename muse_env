@@ -1,0 +1,165 @@
+#!/bin/bash -e
+
+function usage {
+  echo "Usage:"
+  echo "  $0 up [wp_content] [wp_sql] [civi_sql] -- Brings up the development environment."
+  echo "  $0 down -- Tears down the development environment."
+  echo "  $0 reset -- Destroys the data directory."
+  echo "  $0 backup [target] -- Backs up all content to the target folder."
+  echo "  source $0 config -- Exports configuration for docker-compose into the current environment."
+}
+
+[[ $# -eq 0 ]] && usage && exit 1
+
+# Required by docker-compose and this script.
+export WORDPRESS_MYSQL_ROOT_PASSWORD=foo
+export WORDPRESS_MYSQL_DATABASE=muse_wordpress
+export WORDPRESS_MYSQL_USER=muse_wordpress_admin
+export WORDPRESS_MYSQL_PASSWORD=bar
+export CIVICRM_MYSQL_ROOT_PASSWORD=fizz
+export CIVICRM_MYSQL_DATABASE=muse_civicrm
+export CIVICRM_MYSQL_USER=muse_civicrm_admin
+export CIVICRM_MYSQL_PASSWORD=buzz
+export CIVICRM_API_KEY=musedevapikey
+export CIVICRM_SITE_KEY=musedevsitekey
+
+# Get environment variables from a local file that is never checked in to GitHub.
+source secrets
+
+# Local configuration variables.
+DATA_DIR=./data
+
+ACTION=$1
+if [[ "${ACTION}" == "up" ]]; then
+  WORDPRESS_CONTENT=$2
+  WORDPRESS_SQL_DUMP=$3
+  CIVICRM_SQL_DUMP=$4
+elif [[ "${ACTION}" == "down" ]]; then
+  [[ $# -ne 1 ]] && echo "Down action takes no parameters" && usage && exit 1
+  docker-compose down
+  exit 0
+elif [[ "${ACTION}" == "reset" ]]; then
+  [[ $# -ne 1 ]] && echo "Reset action takes no parameters" && usage && exit 1
+  rm -rf ${DATA_DIR}
+  exit 0
+elif [[ "${ACTION}" == "backup" ]]; then
+  [[ $# -ne 2 ]] && echo "Backup action requires a target folder." && usage && exit 1
+  TARGET_FOLDER=$2
+  [[ ! -d ${TARGET_FOLDER} ]] && echo "Target folder must be a directory." && usage && exit 1
+
+  echo "Backing up wordpress database..."
+  docker exec muse_env_wordpress_database_1 \
+    /usr/bin/mysqldump -u root --password=${WORDPRESS_MYSQL_ROOT_PASSWORD} ${WORDPRESS_MYSQL_DATABASE} > \
+    ${TARGET_FOLDER}/wordpress.sql
+
+  echo "Backing up civicrm database..."
+  docker exec muse_env_civicrm_database_1 \
+    /usr/bin/mysqldump -u root --password=${CIVICRM_MYSQL_ROOT_PASSWORD} ${CIVICRM_MYSQL_DATABASE} > \
+    ${TARGET_FOLDER}/civicrm.sql
+
+  echo "Backing up wp-content..."
+  tar -C ./data \
+      --exclude='wp-content/themes/muse_theme' \
+      --exclude='wp-content/uploads/civicrm/custom/*' \
+      --exclude='wp-content/uploads/civicrm/templates_c/*' \
+      -czf ${TARGET_FOLDER}/wp-content.tar.gz wp-content
+
+  exit 0
+elif [[ "${ACTION}" == "config" ]]; then
+  [[ $# -ne 1 ]] && echo "Config action takes no parameters" && usage && return 1
+  return 0
+else
+  echo "Unknown action \"${ACTION}\"" && usage && exit 1
+fi
+
+if [[ -d "${DATA_DIR}" ]]; then
+  echo "Using existing data directory \"${DATA_DIR}\" (databases are assumed to be loaded)."
+  docker-compose up -d
+  exit 0
+fi
+
+[[ -z ${WORDPRESS_CONTENT} ]] && \
+  echo "Data directory does not exist wp-content archive not provided!" && usage && exit 1
+[[ -z ${WORDPRESS_SQL_DUMP} ]] && \
+  echo "Data directory does not exist Wordpress database not provided!" && usage && exit 1
+[[ -z ${CIVICRM_SQL_DUMP} ]] && \
+  echo "Data directory does not exist CiviCRM database not provided!" && usage && exit 1
+
+echo "Unpacking \"${WORDPRESS_CONTENT}\" to \"${DATA_DIR}\"."
+mkdir -p "${DATA_DIR}/wp-content"
+tar -mxf "${WORDPRESS_CONTENT}" --strip-components=1 --directory="${DATA_DIR}/wp-content"
+
+echo "Cloning muse_theme repo..."
+pushd .
+cd ${DATA_DIR}/wp-content/themes
+rm -rf muse_theme
+git clone https://github.com/The-Muse-Collaborative/muse_theme.git
+popd
+
+echo "Linking CiviCRM customizations from muse_theme..."
+rm -rf ./data/wp-content/uploads/civicrm/custom/CRM
+ln -s ../../../themes/muse_theme/civi_custom/civicrm/templates/CRM ./data/wp-content/uploads/civicrm/custom/CRM
+
+# Uncomment this if restoring from a backup that comes from the Vagrant development environment...phase this out eventually...
+# echo "Updating CiviCRM settings."
+# CIVICRM_SETTINGS_FILE="${DATA_DIR}/wp-content/uploads/civicrm/civicrm.settings.php"
+# WORDPRESS_CONN="mysql://${WORDPRESS_MYSQL_USER}:${WORDPRESS_MYSQL_PASSWORD}@wordpress_database/${WORDPRESS_MYSQL_DATABASE}"
+# CIVICRM_CONN="mysql://${CIVICRM_MYSQL_USER}:${CIVICRM_MYSQL_PASSWORD}@civicrm_database/${CIVICRM_MYSQL_DATABASE}"
+# cp "${CIVICRM_SETTINGS_FILE}" "${CIVICRM_SETTINGS_FILE}.bak"
+# sed -i'' -e "s|mysql://muse_wordpress_admin:.*@localhost/muse_wordpress|${WORDPRESS_CONN}|" "${CIVICRM_SETTINGS_FILE}"
+# sed -i'' -e "s|mysql://muse_civicrm_admin:.*@localhost/muse_civicrm|${CIVICRM_CONN}|" "${CIVICRM_SETTINGS_FILE}"
+# sed -i'' -e "s|https://themusecollaborative.org/|http://localhost/|" "${CIVICRM_SETTINGS_FILE}"
+# sed -i'' -e "s|https://192.168.33.10/|http://localhost/|" "${CIVICRM_SETTINGS_FILE}"
+# sed -i'' -e "s|define( 'CIVICRM_SITE_KEY', '.*');|define( 'CIVICRM_SITE_KEY', '${CIVICRM_SITE_KEY}');|" "${CIVICRM_SETTINGS_FILE}"
+
+echo "Building containers..."
+docker-compose build
+
+echo "Starting containers..."
+docker-compose up -d
+
+while ! docker exec muse_env_wordpress_database_1 /usr/bin/mysql -u root --password=${WORDPRESS_MYSQL_ROOT_PASSWORD} -e 'status' &> /dev/null ; do
+  echo "Waiting for wordpress database connection..."
+  sleep 2
+done
+
+echo "Restoring wordpress database contents from sql dump..."
+docker exec -i muse_env_wordpress_database_1 \
+  /usr/bin/mysql -u root --password=${WORDPRESS_MYSQL_ROOT_PASSWORD} ${WORDPRESS_MYSQL_DATABASE} < ${WORDPRESS_SQL_DUMP}
+
+while ! docker exec muse_env_civicrm_database_1 /usr/bin/mysql -u root --password=${CIVICRM_MYSQL_ROOT_PASSWORD} -e 'status' &> /dev/null ; do
+  echo "Waiting for civicrm database connection..."
+  sleep 2
+done
+
+echo "Restoring civicrm database contents from sql dump..."
+docker exec -i muse_env_civicrm_database_1 \
+  /usr/bin/mysql -u root --password=${CIVICRM_MYSQL_ROOT_PASSWORD} ${CIVICRM_MYSQL_DATABASE} < ${CIVICRM_SQL_DUMP}
+
+echo "Updating file permissions..."
+docker exec muse_env_wordpress_1 /bin/bash -c \
+  "find . -path './wp-content/themes/muse_theme' -prune -o \
+          -path './wp-content/uploads/civicrm/custom/CRM' -prune -o \
+          -print0 | \
+   xargs -0 chown www-data:www-data"
+
+# Uncomment this if restoring from a backup that comes from the Vagrant development environment...phase this out eventually...
+# echo "Updating 192.168.33.10 URLs in the wordpress database..."
+# docker run --rm --volumes-from muse_env_wordpress_1 --network container:muse_env_wordpress_1 --user xfs wordpress:cli \
+#   wp search-replace https://192.168.33.10 http://localhost
+# docker run --rm --volumes-from muse_env_wordpress_1 --network container:muse_env_wordpress_1 --user xfs wordpress:cli \
+# wp search-replace http://192.168.33.10 http://localhost
+
+echo "Creating wordpress development user (dev/dev)..."
+docker run --rm --volumes-from muse_env_wordpress_1 --network container:muse_env_wordpress_1 --user xfs wordpress:cli \
+  wp user create dev dev@nowhere.com --role=administrator --user_pass=dev
+
+echo "Getting CiviCRM Contact ID for development user..."
+CIVICRM_DEV_CONTACT_ID=$( \
+  docker run --rm --volumes-from muse_env_wordpress_1 --network container:muse_env_wordpress_1 --user xfs wordpress:cli \
+    wp civicrm api --out=json Contact.get email="dev@nowhere.com" | jq .id)
+
+echo "Creating CiviCRM API Key for development user..."
+docker exec muse_env_civicrm_database_1 \
+  /usr/bin/mysql -u root --password=${CIVICRM_MYSQL_ROOT_PASSWORD} ${CIVICRM_MYSQL_DATABASE} -e \
+    "UPDATE civicrm_contact SET api_key = \"${CIVICRM_API_KEY}\" WHERE id = ${CIVICRM_DEV_CONTACT_ID};"

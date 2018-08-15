@@ -1,0 +1,63 @@
+version: '2'
+services:
+  proxy:
+    image: "muse/proxy"
+    build: ./proxy
+    restart: always
+    ports:
+      - 80:80
+  mail:
+    image: "muse/mailcatcher"
+    build: ./mailcatcher
+    restart: always
+    ports:
+      - 1080:1080
+  usps:
+    image: "muse/usps"
+    build: ./usps
+    restart: always
+    environment:
+      USPS_API_URL: ${USPS_API_URL}
+      USPS_USER_ID: ${USPS_USER_ID}
+  wordpress:
+    depends_on:
+      - wordpress_database
+      - civicrm_database
+    image: "muse/wordpress"
+    build: ./wordpress
+    restart: always
+    volumes:
+      - ./data/wp-content:/var/www/html/wp-content
+    environment:
+      WORDPRESS_DB_HOST:     wordpress_database:3306
+      WORDPRESS_DB_NAME:     ${WORDPRESS_MYSQL_DATABASE}
+      WORDPRESS_DB_USER:     ${WORDPRESS_MYSQL_USER}
+      WORDPRESS_DB_PASSWORD: ${WORDPRESS_MYSQL_PASSWORD}
+  wordpress_database:
+    image: mysql:5.7
+    restart: always
+    volumes:
+       - ./data/wordpress_database:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${WORDPRESS_MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE:      ${WORDPRESS_MYSQL_DATABASE}
+      MYSQL_USER:          ${WORDPRESS_MYSQL_USER}
+      MYSQL_PASSWORD:      ${WORDPRESS_MYSQL_PASSWORD}
+  civicrm_database:
+    image: mysql:5.7
+    restart: always
+    volumes:
+       - ./data/civicrm_database:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${CIVICRM_MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE:      ${CIVICRM_MYSQL_DATABASE}
+      MYSQL_USER:          ${CIVICRM_MYSQL_USER}
+      MYSQL_PASSWORD:      ${CIVICRM_MYSQL_PASSWORD}
+  civicrm_cron:
+    image: "muse/civicrm_cron"
+    build: ./civicrm_cron
+    restart: always
+    environment:
+      CIVICRM_URL:      "http://wordpress/wp-content/plugins/civicrm/civicrm/extern/rest.php"
+      CIVICRM_API_KEY:  ${CIVICRM_API_KEY}
+      CIVICRM_SITE_KEY: ${CIVICRM_SITE_KEY}
