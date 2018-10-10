@@ -118,23 +118,17 @@ docker-compose build
 echo "Starting containers..."
 docker-compose up -d
 
-while ! docker exec muse_env_wordpress_database_1 /usr/bin/mysql -u root --password=${WORDPRESS_MYSQL_ROOT_PASSWORD} -e 'status' &> /dev/null ; do
-  echo "Waiting for wordpress database connection..."
-  sleep 2
-done
-
 echo "Restoring wordpress database contents from sql dump..."
-docker exec -i muse_env_wordpress_database_1 \
-  /usr/bin/mysql -u root --password=${WORDPRESS_MYSQL_ROOT_PASSWORD} ${WORDPRESS_MYSQL_DATABASE} < ${WORDPRESS_SQL_DUMP}
-
-while ! docker exec muse_env_civicrm_database_1 /usr/bin/mysql -u root --password=${CIVICRM_MYSQL_ROOT_PASSWORD} -e 'status' &> /dev/null ; do
-  echo "Waiting for civicrm database connection..."
+while ! docker exec -i muse_env_wordpress_database_1 /usr/bin/mysql -u root --password=${WORDPRESS_MYSQL_ROOT_PASSWORD} ${WORDPRESS_MYSQL_DATABASE} < ${WORDPRESS_SQL_DUMP} &> /dev/null ; do
+  echo "Restore failed. Maybe the mysql database isn't up yet. Waiting two seconds then trying again..."
   sleep 2
 done
 
 echo "Restoring civicrm database contents from sql dump..."
-docker exec -i muse_env_civicrm_database_1 \
-  /usr/bin/mysql -u root --password=${CIVICRM_MYSQL_ROOT_PASSWORD} ${CIVICRM_MYSQL_DATABASE} < ${CIVICRM_SQL_DUMP}
+while ! docker exec -i muse_env_civicrm_database_1 /usr/bin/mysql -u root --password=${CIVICRM_MYSQL_ROOT_PASSWORD} ${CIVICRM_MYSQL_DATABASE} < ${CIVICRM_SQL_DUMP} &> /dev/null ; do
+  echo "Restore failed. Maybe the mysql database isn't up yet. Waiting two seconds then trying again..."
+  sleep 2
+done
 
 echo "Updating file permissions..."
 docker exec muse_env_wordpress_1 /bin/bash -c \
