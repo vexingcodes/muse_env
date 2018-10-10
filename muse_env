@@ -1,5 +1,11 @@
 #!/bin/bash -e
 
+# Make sure the required executables are installed.
+commands=(docker docker-compose jq)
+for cmd in "${commands[@]}"; do
+  command -v "${cmd}" &> /dev/null || { echo "${cmd} not installed!"; exit 1; }
+done
+
 function usage {
   echo "Usage:"
   echo "  $0 up [wp_content] [wp_sql] [civi_sql] -- Brings up the development environment."
